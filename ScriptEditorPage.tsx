@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Search,
   Bell,
@@ -18,91 +18,133 @@ import {
   Moon,
   Sun,
   GripVertical,
+  Loader2,
+  AlertCircle,
 } from "lucide-react";
 
-const initialScenes = [
-  {
-    id: 1,
-    number: "01",
-    heading: "INT. SMALL HOUSE - NIGHT",
-    pages: "2.1",
-    status: "draft",
-    tag: "Act 1",
-    summary: "Hero sits alone and hears a strange knock at midnight.",
-    location: "Small House",
-    time: "Night",
-    mood: "Tense",
-    goal: "Introduce mystery",
-    conflict: "Fear vs curiosity",
-    text: `INT. SMALL HOUSE - NIGHT\n\nRain taps the roof like impatient fingers.\n\nARUN, 32, sits under a dim bulb, staring at an old photograph.\n\nA sudden knock at the door.\n\nARUN\n(whispers)\nAt this hour...?\n\nHe slowly rises.\n\nAnother knock. Louder this time.`,
-  },
-  {
-    id: 2,
-    number: "02",
-    heading: "EXT. LONELY STREET - NIGHT",
-    pages: "1.4",
-    status: "review",
-    tag: "Act 1",
-    summary: "The street outside is empty, but something feels alive in the dark.",
-    location: "Lonely Street",
-    time: "Night",
-    mood: "Suspense",
-    goal: "Expand atmosphere",
-    conflict: "Silence vs hidden threat",
-    text: `EXT. LONELY STREET - NIGHT\n\nThe street is wet and empty.\n\nA flickering streetlight struggles against the darkness.\n\nARUN opens the door and peers out.\n\nNothing.\n\nThen, from the far end of the lane, a SHADOW moves.`,
-  },
-  {
-    id: 3,
-    number: "03",
-    heading: "INT. HOUSE DOORWAY - CONTINUOUS",
-    pages: "1.0",
-    status: "idea",
-    tag: "Act 1",
-    summary: "Arun discovers an envelope placed at the doorstep.",
-    location: "House Doorway",
-    time: "Continuous",
-    mood: "Curious",
-    goal: "Trigger plot",
-    conflict: "Truth vs safety",
-    text: `INT. HOUSE DOORWAY - CONTINUOUS\n\nAt the doorstep lies a sealed brown envelope.\n\nNo name. No stamp. Just one word written in red ink:\n\n"OPEN."\n\nARUN bends down, hesitates, then picks it up.`,
-  },
-];
+/**
+ * ScriptEditorPage - Backend API Connected Version
+ *
+ * Expected route example:
+ * /projects/:projectId/scripts/:scriptId/editor
+ *
+ * Expected backend endpoints (matching the earlier API blueprint):
+ * GET    /api/v1/projects/:projectId
+ * GET    /api/v1/editor/projects/:projectId/scripts/:scriptId/current
+ * PUT    /api/v1/editor/projects/:projectId/scripts/:scriptId/current
+ * POST   /api/v1/projects/:projectId/scenes/parse-from-draft
+ * GET    /api/v1/projects/:projectId/scenes
+ * PATCH  /api/v1/projects/:projectId/scenes/:sceneId
+ * GET    /api/v1/projects/:projectId/notes
+ * GET    /api/v1/projects/:projectId/comments
+ * POST   /api/v1/projects/:projectId/exports/pdf
+ * POST   /api/v1/projects/:projectId/scenes
+ */
 
-const notesSeed = [
-  {
-    id: 1,
-    title: "Scene tone",
-    text: "Keep this opening visual and quiet. Let the silence do half the writing.",
-    type: "Scene Note",
-  },
-  {
-    id: 2,
-    title: "Character reminder",
-    text: "Arun speaks less. Fear should show in action, not long explanation.",
-    type: "Character Note",
-  },
-];
-
-const commentsSeed = [
-  {
-    id: 1,
-    user: "Director",
-    text: "Opening is strong. Maybe make the second knock even more disturbing.",
-    time: "8 min ago",
-  },
-  {
-    id: 2,
-    user: "Co-Writer",
-    text: "Scene heading feels clean. Add one visual object that hints at backstory.",
-    time: "21 min ago",
-  },
-];
-
+type SaveState = "Saved just now" | "Saving..." | "Unsaved changes" | "Save failed";
 type RightTab = "notes" | "comments" | "ai" | "scene";
+
+type Project = {
+  id: string;
+  title: string;
+  language?: string;
+  genre?: string;
+  format_type?: string;
+};
+
+type Scene = {
+  id: string;
+  number: string;
+  heading: string;
+  pages?: string;
+  status?: string;
+  tag?: string;
+  summary?: string;
+  location?: string;
+  time?: string;
+  mood?: string;
+  goal?: string;
+  conflict?: string;
+  text?: string;
+};
+
+type NoteItem = {
+  id: string;
+  title?: string;
+  note_text: string;
+  note_type?: string;
+};
+
+type CommentItem = {
+  id: string;
+  user?: { full_name?: string };
+  comment_text: string;
+  created_at?: string;
+};
+
+type EditorPayload = {
+  scriptId: string;
+  scriptTitle?: string;
+  currentVersionId?: string;
+  content_raw: string;
+  updated_at?: string;
+};
+
+type ApiResponse<T> = {
+  success: boolean;
+  message?: string;
+  data: T;
+};
+
+const API_BASE_URL = "/api/v1";
+
+/**
+ * Replace this with your real auth token getter.
+ * Example:
+ * localStorage.getItem("token")
+ * or cookie-based auth where no Authorization header is needed.
+ */
+function getAccessToken() {
+  return localStorage.getItem("token") || "";
+}
+
+async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = getAccessToken();
+
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {}),
+    },
+  });
+
+  const isJson = response.headers.get("content-type")?.includes("application/json");
+  const payload = isJson ? await response.json() : null;
+
+  if (!response.ok) {
+    const message = payload?.message || `Request failed with status ${response.status}`;
+    throw new Error(message);
+  }
+
+  return payload as T;
+}
+
+function timeAgo(dateString?: string) {
+  if (!dateString) return "";
+  const now = new Date().getTime();
+  const then = new Date(dateString).getTime();
+  const diffMin = Math.max(1, Math.floor((now - then) / 60000));
+  if (diffMin < 60) return `${diffMin} min ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr} hr ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay} day ago`;
+}
 
 function getElementType(line: string) {
   const trimmed = line.trim();
-
   if (!trimmed) return "empty";
   if (/^(INT\.|EXT\.|INT\/EXT\.|EST\.)/i.test(trimmed)) return "scene";
   if (/^(CUT TO:|FADE IN:|FADE OUT:|SMASH CUT TO:|DISSOLVE TO:)$/i.test(trimmed)) return "transition";
@@ -118,6 +160,13 @@ function getElementType(line: string) {
   return "action";
 }
 
+function getSceneHeadingFromText(text: string, fallback = "UNTITLED SCENE") {
+  const line = text
+    .split("\n")
+    .find((entry) => /^(INT\.|EXT\.|INT\/EXT\.|EST\.)/i.test(entry.trim()));
+  return line?.trim() || fallback;
+}
+
 function ScreenplayPreview({ text }: { text: string }) {
   const lines = text.split("\n");
 
@@ -127,9 +176,7 @@ function ScreenplayPreview({ text }: { text: string }) {
         {lines.map((line, idx) => {
           const type = getElementType(line);
 
-          if (type === "empty") {
-            return <div key={idx} className="h-5" />;
-          }
+          if (type === "empty") return <div key={idx} className="h-5" />;
 
           if (type === "scene") {
             return (
@@ -186,23 +233,40 @@ function ScreenplayPreview({ text }: { text: string }) {
 }
 
 export default function ScriptEditorPage() {
-  const [scenes, setScenes] = useState(initialScenes);
-  const [selectedSceneId, setSelectedSceneId] = useState(initialScenes[0].id);
-  const [editorValue, setEditorValue] = useState(initialScenes[0].text);
+  /**
+   * In a real app, get these from react-router params:
+   * const { projectId, scriptId } = useParams();
+   */
+  const projectId = "proj_001";
+  const scriptId = "script_001";
+
+  const [project, setProject] = useState<Project | null>(null);
+  const [scriptTitle, setScriptTitle] = useState("First Draft");
+  const [scenes, setScenes] = useState<Scene[]>([]);
+  const [notes, setNotes] = useState<NoteItem[]>([]);
+  const [comments, setComments] = useState<CommentItem[]>([]);
+  const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
+  const [editorValue, setEditorValue] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [rightTab, setRightTab] = useState<RightTab>("notes");
   const [darkMode, setDarkMode] = useState(true);
   const [previewMode, setPreviewMode] = useState(false);
-  const [saveState, setSaveState] = useState<"Saved just now" | "Saving..." | "Unsaved changes">("Saved just now");
+  const [saveState, setSaveState] = useState<SaveState>("Saved just now");
+  const [isBootLoading, setIsBootLoading] = useState(true);
+  const [isExporting, setIsExporting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const selectedScene = useMemo(
-    () => scenes.find((s) => s.id === selectedSceneId) ?? scenes[0],
-    [scenes, selectedSceneId]
-  );
+  const autosaveTimerRef = useRef<number | null>(null);
+  const initializedRef = useRef(false);
+
+  const selectedScene = useMemo(() => {
+    if (!selectedSceneId) return null;
+    return scenes.find((scene) => scene.id === selectedSceneId) ?? null;
+  }, [scenes, selectedSceneId]);
 
   const filteredScenes = useMemo(() => {
     return scenes.filter((scene) => {
-      const target = `${scene.heading} ${scene.summary} ${scene.tag}`.toLowerCase();
+      const target = `${scene.heading} ${scene.summary || ""} ${scene.tag || ""}`.toLowerCase();
       return target.includes(searchTerm.toLowerCase());
     });
   }, [scenes, searchTerm]);
@@ -214,63 +278,194 @@ export default function ScriptEditorPage() {
 
   const estimatedRuntime = useMemo(() => estimatedPages, [estimatedPages]);
 
-  const switchScene = (sceneId: number) => {
-    const next = scenes.find((s) => s.id === sceneId);
-    if (!next) return;
-    setSelectedSceneId(sceneId);
-    setEditorValue(next.text);
-    setSaveState("Saved just now");
-  };
+  async function loadBootData() {
+    setIsBootLoading(true);
+    setError(null);
 
-  const handleEditorChange = (value: string) => {
+    try {
+      const [projectRes, editorRes, scenesRes, notesRes, commentsRes] = await Promise.all([
+        apiFetch<ApiResponse<Project>>(`/projects/${projectId}`),
+        apiFetch<ApiResponse<EditorPayload>>(`/editor/projects/${projectId}/scripts/${scriptId}/current`),
+        apiFetch<ApiResponse<Scene[]>>(`/projects/${projectId}/scenes`),
+        apiFetch<ApiResponse<NoteItem[]>>(`/projects/${projectId}/notes`),
+        apiFetch<ApiResponse<CommentItem[]>>(`/projects/${projectId}/comments`),
+      ]);
+
+      setProject(projectRes.data);
+      setScriptTitle(editorRes.data.scriptTitle || "First Draft");
+      setEditorValue(editorRes.data.content_raw || "");
+      setNotes(notesRes.data || []);
+      setComments(commentsRes.data || []);
+
+      const loadedScenes = (scenesRes.data || []).map((scene, index) => ({
+        ...scene,
+        number: scene.number || String(index + 1).padStart(2, "0"),
+      }));
+
+      setScenes(loadedScenes);
+      setSelectedSceneId(loadedScenes[0]?.id || null);
+      setSaveState("Saved just now");
+      initializedRef.current = true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to load editor";
+      setError(message);
+    } finally {
+      setIsBootLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadBootData();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedScene && scenes.length > 0 && !selectedSceneId) {
+      setSelectedSceneId(scenes[0].id);
+    }
+  }, [scenes, selectedScene, selectedSceneId]);
+
+  async function saveDraft(content: string) {
+    setSaveState("Saving...");
+
+    try {
+      await apiFetch<ApiResponse<EditorPayload>>(
+        `/editor/projects/${projectId}/scripts/${scriptId}/current`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ content_raw: content }),
+        }
+      );
+
+      setSaveState("Saved just now");
+
+      const heading = getSceneHeadingFromText(content, selectedScene?.heading || "UNTITLED SCENE");
+      if (selectedSceneId) {
+        setScenes((prev) =>
+          prev.map((scene) =>
+            scene.id === selectedSceneId
+              ? {
+                  ...scene,
+                  heading,
+                  text: content,
+                }
+              : scene
+          )
+        );
+      }
+    } catch {
+      setSaveState("Save failed");
+    }
+  }
+
+  function handleEditorChange(value: string) {
     setEditorValue(value);
     setSaveState("Unsaved changes");
 
-    window.clearTimeout((window as any).__scriptSaveTimer);
-    (window as any).__scriptSaveTimer = window.setTimeout(() => {
+    if (selectedSceneId) {
       setScenes((prev) =>
         prev.map((scene) =>
-          scene.id === selectedSceneId
-            ? {
-                ...scene,
-                text: value,
-                heading:
-                  value
-                    .split("\n")
-                    .find((line) => /^(INT\.|EXT\.|INT\/EXT\.|EST\.)/i.test(line.trim()))
-                    ?.trim() || scene.heading,
-              }
-            : scene
+          scene.id === selectedSceneId ? { ...scene, text: value, heading: getSceneHeadingFromText(value, scene.heading) } : scene
         )
       );
-      setSaveState("Saving...");
-      setTimeout(() => setSaveState("Saved just now"), 500);
-    }, 800);
-  };
+    }
 
-  const addNewScene = () => {
-    const newId = scenes.length + 1;
-    const newScene = {
-      id: newId,
-      number: String(newId).padStart(2, "0"),
-      heading: `INT. NEW LOCATION - DAY`,
-      pages: "1.0",
-      status: "idea",
-      tag: "New",
-      summary: "Write your new scene here.",
-      location: "New Location",
-      time: "Day",
-      mood: "Open",
-      goal: "Define scene purpose",
-      conflict: "Unknown",
-      text: `INT. NEW LOCATION - DAY\n\nDescribe the scene here.\n\nCHARACTER NAME\nDialogue goes here.`,
-    };
+    if (autosaveTimerRef.current) {
+      window.clearTimeout(autosaveTimerRef.current);
+    }
 
-    setScenes((prev) => [...prev, newScene]);
-    setSelectedSceneId(newId);
-    setEditorValue(newScene.text);
-    setSaveState("Unsaved changes");
-  };
+    autosaveTimerRef.current = window.setTimeout(() => {
+      void saveDraft(value);
+    }, 900);
+  }
+
+  async function refreshScenesFromDraft() {
+    try {
+      const response = await apiFetch<ApiResponse<Scene[]>>(`/projects/${projectId}/scenes/parse-from-draft`, {
+        method: "POST",
+      });
+
+      const parsed = (response.data || []).map((scene, index) => ({
+        ...scene,
+        number: scene.number || String(index + 1).padStart(2, "0"),
+      }));
+
+      setScenes(parsed);
+      if (!selectedSceneId && parsed[0]) {
+        setSelectedSceneId(parsed[0].id);
+      }
+    } catch {
+      // no-op for now
+    }
+  }
+
+  async function switchScene(sceneId: string) {
+    const next = scenes.find((scene) => scene.id === sceneId);
+    if (!next) return;
+
+    if (saveState === "Unsaved changes") {
+      await saveDraft(editorValue);
+    }
+
+    setSelectedSceneId(sceneId);
+    setEditorValue(next.text || editorValue);
+    setSaveState("Saved just now");
+  }
+
+  async function addNewScene() {
+    try {
+      const response = await apiFetch<ApiResponse<Scene>>(`/projects/${projectId}/scenes`, {
+        method: "POST",
+        body: JSON.stringify({
+          heading: "INT. NEW LOCATION - DAY",
+          summary: "Write your new scene here.",
+          status: "idea",
+        }),
+      });
+
+      const newScene = response.data;
+      const hydratedScene: Scene = {
+        ...newScene,
+        number: newScene.number || String(scenes.length + 1).padStart(2, "0"),
+        text:
+          newScene.text ||
+          `INT. NEW LOCATION - DAY\n\nDescribe the scene here.\n\nCHARACTER NAME\nDialogue goes here.`,
+      };
+
+      setScenes((prev) => [...prev, hydratedScene]);
+      setSelectedSceneId(hydratedScene.id);
+      setEditorValue(hydratedScene.text || "");
+      setSaveState("Unsaved changes");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create scene");
+    }
+  }
+
+  async function exportPdf() {
+    setIsExporting(true);
+    try {
+      const response = await apiFetch<ApiResponse<{ file_url?: string }>>(`/projects/${projectId}/exports/pdf`, {
+        method: "POST",
+        body: JSON.stringify({ script_id: scriptId }),
+      });
+
+      if (response.data?.file_url) {
+        window.open(response.data.file_url, "_blank", "noopener,noreferrer");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "PDF export failed");
+    } finally {
+      setIsExporting(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!initializedRef.current) return;
+    const timer = window.setTimeout(() => {
+      void refreshScenesFromDraft();
+    }, 1200);
+
+    return () => window.clearTimeout(timer);
+  }, [editorValue]);
 
   const pageShell = darkMode
     ? "min-h-screen bg-zinc-950 text-zinc-100"
@@ -283,6 +478,37 @@ export default function ScriptEditorPage() {
     ? "border-zinc-800 bg-zinc-950 text-zinc-100 placeholder:text-zinc-500"
     : "border-zinc-300 bg-white text-zinc-900 placeholder:text-zinc-400";
 
+  if (isBootLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-950 text-zinc-100">
+        <div className="flex items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-900 px-5 py-4">
+          <Loader2 className="h-5 w-5 animate-spin text-amber-400" />
+          <span className="text-sm">Loading script editor...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && !project) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-950 p-6 text-zinc-100">
+        <div className="max-w-md rounded-3xl border border-red-500/30 bg-zinc-900 p-6 text-center shadow-2xl">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-red-500/10">
+            <AlertCircle className="h-7 w-7 text-red-400" />
+          </div>
+          <h2 className="text-lg font-semibold">Could not load the editor</h2>
+          <p className="mt-2 text-sm text-zinc-400">{error}</p>
+          <button
+            onClick={() => void loadBootData()}
+            className="mt-5 rounded-2xl bg-amber-400 px-4 py-2.5 text-sm font-semibold text-black hover:bg-amber-300"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={pageShell}>
       <div className={`sticky top-0 z-30 border-b backdrop-blur ${darkMode ? "border-zinc-800 bg-zinc-950/90" : "border-zinc-200 bg-white/90"}`}>
@@ -294,11 +520,15 @@ export default function ScriptEditorPage() {
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold tracking-wide text-amber-400">MEI Script Studio</p>
               <div className="flex flex-wrap items-center gap-2 text-sm">
-                <span className="font-medium">Project: Thiraiyin Iravu</span>
+                <span className="font-medium">Project: {project?.title || "Untitled Project"}</span>
                 <span className={muted}>•</span>
-                <span className={muted}>Draft: First Draft</span>
+                <span className={muted}>Draft: {scriptTitle}</span>
                 <span className={muted}>•</span>
-                <span className="inline-flex items-center gap-1 text-emerald-400">
+                <span
+                  className={`inline-flex items-center gap-1 ${
+                    saveState === "Save failed" ? "text-red-400" : "text-emerald-400"
+                  }`}
+                >
                   <Save className="h-4 w-4" />
                   {saveState}
                 </span>
@@ -339,18 +569,28 @@ export default function ScriptEditorPage() {
             <button className={`rounded-xl border p-2 transition ${surface}`}>
               <Bell className="h-4 w-4" />
             </button>
-            <button className="inline-flex items-center gap-2 rounded-xl bg-amber-400 px-3 py-2 text-sm font-semibold text-black transition hover:bg-amber-300">
-              <Download className="h-4 w-4" />
-              Export
+            <button
+              onClick={() => void exportPdf()}
+              disabled={isExporting}
+              className="inline-flex items-center gap-2 rounded-xl bg-amber-400 px-3 py-2 text-sm font-semibold text-black transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {isExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {isExporting ? "Exporting..." : "Export"}
             </button>
             <button className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm ${surface}`}>
               <User className="h-4 w-4" />
-              Balraj
+              Writer
               <ChevronDown className="h-4 w-4" />
             </button>
           </div>
         </div>
       </div>
+
+      {error && (
+        <div className="border-b border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300 lg:px-6">
+          {error}
+        </div>
+      )}
 
       <div className="grid min-h-[calc(100vh-73px)] grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)_360px]">
         <aside className={`border-r ${darkMode ? "border-zinc-800" : "border-zinc-200"}`}>
@@ -360,7 +600,7 @@ export default function ScriptEditorPage() {
               <p className={`text-xs ${muted}`}>{filteredScenes.length} scenes • screenplay flow</p>
             </div>
             <button
-              onClick={addNewScene}
+              onClick={() => void addNewScene()}
               className="inline-flex items-center gap-1 rounded-xl bg-emerald-500 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-400"
             >
               <Plus className="h-4 w-4" />
@@ -393,7 +633,7 @@ export default function ScriptEditorPage() {
               return (
                 <button
                   key={scene.id}
-                  onClick={() => switchScene(scene.id)}
+                  onClick={() => void switchScene(scene.id)}
                   className={`w-full rounded-2xl border p-3 text-left transition ${
                     active
                       ? "border-amber-400 bg-amber-400/10 shadow-[0_0_0_1px_rgba(251,191,36,0.2)]"
@@ -416,14 +656,14 @@ export default function ScriptEditorPage() {
                           : "bg-zinc-500/15 text-zinc-400"
                       }`}
                     >
-                      {scene.status}
+                      {scene.status || "idea"}
                     </span>
                   </div>
                   <p className="line-clamp-1 text-sm font-semibold">{scene.heading}</p>
-                  <p className={`mt-1 line-clamp-2 text-xs ${muted}`}>{scene.summary}</p>
+                  <p className={`mt-1 line-clamp-2 text-xs ${muted}`}>{scene.summary || "No summary yet"}</p>
                   <div className={`mt-3 flex items-center justify-between text-[11px] ${muted}`}>
-                    <span>{scene.pages} pages</span>
-                    <span>{scene.tag}</span>
+                    <span>{scene.pages || "1.0"} pages</span>
+                    <span>{scene.tag || "Scene"}</span>
                   </div>
                 </button>
               );
@@ -455,15 +695,15 @@ export default function ScriptEditorPage() {
                 <div className="mb-4 grid gap-4 md:grid-cols-3">
                   <div className={`rounded-2xl border p-4 ${softSurface}`}>
                     <p className={`text-xs uppercase tracking-wider ${muted}`}>Current scene</p>
-                    <p className="mt-2 text-sm font-semibold">{selectedScene.heading}</p>
+                    <p className="mt-2 text-sm font-semibold">{selectedScene?.heading || "No scene selected"}</p>
                   </div>
                   <div className={`rounded-2xl border p-4 ${softSurface}`}>
                     <p className={`text-xs uppercase tracking-wider ${muted}`}>Scene purpose</p>
-                    <p className="mt-2 text-sm font-semibold">{selectedScene.goal}</p>
+                    <p className="mt-2 text-sm font-semibold">{selectedScene?.goal || "Define purpose"}</p>
                   </div>
                   <div className={`rounded-2xl border p-4 ${softSurface}`}>
                     <p className={`text-xs uppercase tracking-wider ${muted}`}>Conflict</p>
-                    <p className="mt-2 text-sm font-semibold">{selectedScene.conflict}</p>
+                    <p className="mt-2 text-sm font-semibold">{selectedScene?.conflict || "Define conflict"}</p>
                   </div>
                 </div>
 
@@ -521,9 +761,7 @@ export default function ScriptEditorPage() {
                   key={item.key}
                   onClick={() => setRightTab(item.key as RightTab)}
                   className={`flex flex-col items-center justify-center gap-1 rounded-2xl border px-2 py-3 text-xs transition ${
-                    active
-                      ? "border-amber-400 bg-amber-400/10 text-amber-400"
-                      : surface
+                    active ? "border-amber-400 bg-amber-400/10 text-amber-400" : surface
                   }`}
                 >
                   <Icon className="h-4 w-4" />
@@ -540,17 +778,21 @@ export default function ScriptEditorPage() {
                   <Plus className="h-4 w-4" />
                   Add Quick Note
                 </button>
-                {notesSeed.map((note) => (
-                  <div key={note.id} className={`rounded-2xl border p-4 ${softSurface}`}>
-                    <div className="mb-2 flex items-center justify-between">
-                      <p className="text-sm font-semibold">{note.title}</p>
-                      <span className="rounded-full bg-amber-400/10 px-2 py-1 text-[10px] font-semibold uppercase text-amber-400">
-                        {note.type}
-                      </span>
+                {notes.length === 0 ? (
+                  <div className={`rounded-2xl border p-4 text-sm ${softSurface}`}>No notes yet.</div>
+                ) : (
+                  notes.map((note) => (
+                    <div key={note.id} className={`rounded-2xl border p-4 ${softSurface}`}>
+                      <div className="mb-2 flex items-center justify-between">
+                        <p className="text-sm font-semibold">{note.title || "Untitled note"}</p>
+                        <span className="rounded-full bg-amber-400/10 px-2 py-1 text-[10px] font-semibold uppercase text-amber-400">
+                          {note.note_type || "Note"}
+                        </span>
+                      </div>
+                      <p className={`text-sm leading-6 ${muted}`}>{note.note_text}</p>
                     </div>
-                    <p className={`text-sm leading-6 ${muted}`}>{note.text}</p>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
             )}
 
@@ -560,19 +802,23 @@ export default function ScriptEditorPage() {
                   <MessageSquare className="h-4 w-4" />
                   Add Comment
                 </button>
-                {commentsSeed.map((comment) => (
-                  <div key={comment.id} className={`rounded-2xl border p-4 ${softSurface}`}>
-                    <div className="mb-2 flex items-center justify-between">
-                      <p className="text-sm font-semibold">{comment.user}</p>
-                      <span className={`text-xs ${muted}`}>{comment.time}</span>
+                {comments.length === 0 ? (
+                  <div className={`rounded-2xl border p-4 text-sm ${softSurface}`}>No comments yet.</div>
+                ) : (
+                  comments.map((comment) => (
+                    <div key={comment.id} className={`rounded-2xl border p-4 ${softSurface}`}>
+                      <div className="mb-2 flex items-center justify-between">
+                        <p className="text-sm font-semibold">{comment.user?.full_name || "Collaborator"}</p>
+                        <span className={`text-xs ${muted}`}>{timeAgo(comment.created_at)}</span>
+                      </div>
+                      <p className="text-sm leading-6">{comment.comment_text}</p>
+                      <div className="mt-3 flex gap-2">
+                        <button className={`rounded-xl border px-3 py-2 text-xs ${surface}`}>Reply</button>
+                        <button className={`rounded-xl border px-3 py-2 text-xs ${surface}`}>Resolve</button>
+                      </div>
                     </div>
-                    <p className="text-sm leading-6">{comment.text}</p>
-                    <div className="mt-3 flex gap-2">
-                      <button className={`rounded-xl border px-3 py-2 text-xs ${surface}`}>Reply</button>
-                      <button className={`rounded-xl border px-3 py-2 text-xs ${surface}`}>Resolve</button>
-                    </div>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
             )}
 
@@ -584,7 +830,7 @@ export default function ScriptEditorPage() {
                     <p className="text-sm font-semibold">AI Writer Assistant</p>
                   </div>
                   <p className={`text-sm leading-6 ${muted}`}>
-                    Scene rewrite, dialogue polish, emotional lift, visual sharpness — all from one side panel.
+                    Connect this panel to your /api/v1/ai endpoints for rewrite, dialogue polish, summary, and translation.
                   </p>
                 </div>
                 {[
@@ -609,33 +855,33 @@ export default function ScriptEditorPage() {
               <div className="space-y-3">
                 <div className={`rounded-2xl border p-4 ${softSurface}`}>
                   <p className={`text-xs uppercase tracking-wider ${muted}`}>Heading</p>
-                  <p className="mt-2 text-sm font-semibold">{selectedScene.heading}</p>
+                  <p className="mt-2 text-sm font-semibold">{selectedScene?.heading || "No scene selected"}</p>
                 </div>
                 <div className={`grid grid-cols-2 gap-3`}>
                   <div className={`rounded-2xl border p-4 ${softSurface}`}>
                     <p className={`text-xs uppercase tracking-wider ${muted}`}>Location</p>
-                    <p className="mt-2 text-sm font-semibold">{selectedScene.location}</p>
+                    <p className="mt-2 text-sm font-semibold">{selectedScene?.location || "—"}</p>
                   </div>
                   <div className={`rounded-2xl border p-4 ${softSurface}`}>
                     <p className={`text-xs uppercase tracking-wider ${muted}`}>Time</p>
-                    <p className="mt-2 text-sm font-semibold">{selectedScene.time}</p>
+                    <p className="mt-2 text-sm font-semibold">{selectedScene?.time || "—"}</p>
                   </div>
                 </div>
                 <div className={`rounded-2xl border p-4 ${softSurface}`}>
                   <p className={`text-xs uppercase tracking-wider ${muted}`}>Mood</p>
-                  <p className="mt-2 text-sm font-semibold">{selectedScene.mood}</p>
+                  <p className="mt-2 text-sm font-semibold">{selectedScene?.mood || "—"}</p>
                 </div>
                 <div className={`rounded-2xl border p-4 ${softSurface}`}>
                   <p className={`text-xs uppercase tracking-wider ${muted}`}>Goal</p>
-                  <p className="mt-2 text-sm font-semibold">{selectedScene.goal}</p>
+                  <p className="mt-2 text-sm font-semibold">{selectedScene?.goal || "—"}</p>
                 </div>
                 <div className={`rounded-2xl border p-4 ${softSurface}`}>
                   <p className={`text-xs uppercase tracking-wider ${muted}`}>Conflict</p>
-                  <p className="mt-2 text-sm font-semibold">{selectedScene.conflict}</p>
+                  <p className="mt-2 text-sm font-semibold">{selectedScene?.conflict || "—"}</p>
                 </div>
                 <div className={`rounded-2xl border p-4 ${softSurface}`}>
                   <p className={`text-xs uppercase tracking-wider ${muted}`}>Summary</p>
-                  <p className="mt-2 text-sm leading-6">{selectedScene.summary}</p>
+                  <p className="mt-2 text-sm leading-6">{selectedScene?.summary || "No summary yet"}</p>
                 </div>
               </div>
             )}
